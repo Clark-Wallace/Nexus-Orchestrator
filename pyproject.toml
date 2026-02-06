@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nexus-orchestrator"
+version = "0.1.0"
+description = "Constitutional multi-agent engineering — unified framework made executable"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+nexus-orch = "cli.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["orchestration*", "cli*"]
