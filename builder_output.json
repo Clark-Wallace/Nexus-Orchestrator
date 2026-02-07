@@ -1,110 +1,165 @@
 {
-  "task_id": "tier_6_lineage_observability",
-  "builder_session_id": "claude_opus_4_6_session_006",
+  "task_id": "tier_7_export_web_interface",
+  "builder_session_id": "claude_opus_4_6_session_007",
   "completed_at": "2026-02-06T00:00:00Z",
-  "previous_tier": "tier_5_review_pipeline",
+  "previous_tier": "tier_6_lineage_observability",
 
   "artifacts": [
     {
-      "file": "orchestration/lineage.py",
-      "implements": "NEW: Core Tier 6 logic — JSONL persistence (append_decision, append_artifact_lineage, append_usage, load_decisions, load_artifact_lineage, load_usage), decision recording (record_phase_decision, record_gate_decision), artifact lineage (build_artifact_lineage_chain, register_artifact_with_lineage), project health (update_project_health).",
-      "task_contract_section": "Lineage and Observability (Doc 08 §6, Build Order Tier 6)",
+      "file": "web/export.py",
+      "implements": "NEW: Pure project archive functions — create_project_archive (zips project dir to BytesIO), list_project_files (file list with sizes). No FastAPI dependency, usable from CLI and web.",
+      "task_contract_section": "Export Capability (Doc 08 §7, Doc 09 Tier 7/8)",
       "verbs_used": [],
       "constraints_enforced": [
-        "Append-only JSONL: immutable decision history, one JSON object per line",
-        "Decision recording purely additive — no existing control flow modified",
-        "Lineage chain is best-effort — shorter chain if no matching decisions",
-        "Gate decisions recorded as made_by=human with response type details",
-        "Health recalculated from current state, not incremental"
+        "Pure functions — no FastAPI imports",
+        "Returns BytesIO for streaming from both CLI and web",
+        "FileNotFoundError raised for missing projects"
       ]
     },
     {
-      "file": "orchestration/cost_tracker.py",
-      "implements": "NEW: Cost aggregation functions — aggregate_costs_by_task, aggregate_costs_by_tier, aggregate_costs_by_provider, aggregate_costs_by_role, aggregate_costs_by_model, total_project_cost, format_cost_report (multi-section human-readable report).",
-      "task_contract_section": "Cost Reporting (Doc 08 §6, Build Order Tier 6)",
+      "file": "web/schemas.py",
+      "implements": "NEW: Pydantic v2 request/response models — ProjectSummary, ProjectDetail, ProjectCreateRequest, GateSummary, GateDetail, GateResponseInput, ArtifactSummary, ArtifactDetail, DecisionEntry, LineageEntry, CostReportResponse, ExportInfo, HealthResponse, WSMessage.",
+      "task_contract_section": "Web Interface Schemas (Doc 08 §7)",
       "verbs_used": [],
       "constraints_enforced": [
-        "All functions are pure — load from JSONL and compute aggregates",
-        "format_cost_report includes: total, by tier, by provider, by role, top tasks, by model",
-        "Graceful empty state — reports 'No usage data recorded' when no entries"
+        "All models use Pydantic v2 BaseModel",
+        "ProjectDetail wraps to_dict() output in data field",
+        "GateResponseInput supports all GateResponseType variants"
       ]
     },
     {
-      "file": "orchestration/architect.py",
-      "implements": "Updated: Hooks at every phase method — run_vision_intake (decision + usage), process_vision_response (phase_transition), run_system_design (decision + usage), process_design_response (design_choice + usage), run_build_decomposition (decision), process_decomposition_response (decomposition_approved), run_build_supervision (build_complete + health), run_review_phase (review_complete + health), process_review_response (register_artifact_with_lineage replaces plain assignment). New import: orchestration.lineage functions.",
-      "task_contract_section": "Architect Hooks (Doc 08 §6, Build Order Tier 6)",
+      "file": "web/app.py",
+      "implements": "NEW: FastAPI application factory — create_app(projects_dir, docs_dir) creates configured app with CORS, health endpoint, route routers (projects/gates/artifacts/lineage/costs/export under /api prefix), WebSocket endpoint at /ws/{project_id}.",
+      "task_contract_section": "Web Interface App (Doc 08 §7)",
       "verbs_used": [],
       "constraints_enforced": [
-        "All hooks purely additive — insert after journal entries, before save",
-        "Usage tracking from send_message response usage dict",
-        "register_artifact_with_lineage replaces project.artifacts[file_path] = artifact",
-        "update_project_health called after build supervision and review phases"
+        "Factory pattern allows tests to inject temp directories",
+        "State stored on app.state (projects_dir, docs_dir, ws_manager)",
+        "All routes under /api prefix, health at /health, WebSocket at /ws"
       ]
     },
     {
-      "file": "orchestration/gate_manager.py",
-      "implements": "Updated: Hook in respond_to_gate() — record_gate_decision called after _save_gate, before clearing pending_gate. Every gate response creates a Decision with made_by='human'.",
-      "task_contract_section": "Gate Decision Recording (Doc 08 §6)",
+      "file": "web/dependencies.py",
+      "implements": "NEW: FastAPI dependency injection — get_projects_dir, get_docs_dir, get_project (404 on missing), get_ws_manager.",
+      "task_contract_section": "Web Interface Dependencies (Doc 08 §7)",
       "verbs_used": [],
       "constraints_enforced": [
-        "Every gate approval/rejection/modification recorded as human decision",
-        "Decision includes gate type, response type details, option chosen"
+        "get_project raises HTTPException(404) for missing projects",
+        "All deps read from request.app.state"
       ]
     },
     {
-      "file": "orchestration/builder_dispatch.py",
-      "implements": "Updated: Hook in BuilderSession.dispatch() — append_usage called after token usage set, records builder role, provider, model, tokens, cost, phase, tier per task.",
-      "task_contract_section": "Builder Usage Tracking (Doc 08 §6)",
+      "file": "web/websocket.py",
+      "implements": "NEW: OrchestratorWSManager — per-project WebSocket subscription. connect/disconnect/broadcast/handle_connection. Dead connections cleaned on broadcast failure. active_connections property.",
+      "task_contract_section": "Real-time Progress (Doc 08 §7, Doc 09 Tier 8)",
       "verbs_used": [],
       "constraints_enforced": [
-        "Usage tracked at call site from send_message response",
-        "Correct provider/model/tier recorded per task"
+        "Per-project isolation — broadcast only reaches subscribers of that project",
+        "Dead connections automatically removed on send failure",
+        "JSON-encoded messages with event, project_id, data, timestamp"
       ]
     },
     {
-      "file": "orchestration/review_engine.py",
-      "implements": "Updated: Hook in ReviewEngine.run_architect_review() — append_usage called after connector.send_message, records reviewer role, provider, model, tokens, cost per reviewed task.",
-      "task_contract_section": "Reviewer Usage Tracking (Doc 08 §6)",
+      "file": "web/routes/projects.py",
+      "implements": "NEW: Project endpoints — GET /api/projects (list), POST /api/projects (create from vision markdown), GET /api/projects/{id} (detail), GET /api/projects/{id}/status (phase + health).",
+      "task_contract_section": "POST /projects, GET /projects/{id} (Doc 08 §7)",
       "verbs_used": [],
       "constraints_enforced": [
-        "Reviewer usage only recorded when response includes usage data",
-        "Correct task_id and phase recorded"
+        "POST validates vision markdown with VisionContract.from_markdown()",
+        "422 returned for invalid vision, 201 for success",
+        "Delegates to ProjectState for persistence"
+      ]
+    },
+    {
+      "file": "web/routes/gates.py",
+      "implements": "NEW: Gate endpoints — GET .../gates (list), GET .../gates/{id} (detail), POST .../gates/{id} (respond). Builds GateResponse from GateResponseInput, delegates to GateManager, broadcasts via WebSocket.",
+      "task_contract_section": "GET /projects/{id}/gates, POST .../gates/{gid} (Doc 08 §7)",
+      "verbs_used": [],
+      "constraints_enforced": [
+        "Delegates to GateManager.respond_to_gate() — no gate logic duplication",
+        "All GateResponseType variants supported via _build_gate_response()",
+        "Gate events broadcast via WebSocket manager"
+      ]
+    },
+    {
+      "file": "web/routes/artifacts.py",
+      "implements": "NEW: Artifact endpoints — GET .../artifacts (list), GET .../artifacts/{id} (detail with lineage chain).",
+      "task_contract_section": "GET /projects/{id}/artifacts (Doc 08 §7)",
+      "verbs_used": [],
+      "constraints_enforced": [
+        "Artifact detail includes lineage chain from Artifact model",
+        "404 for missing artifacts"
+      ]
+    },
+    {
+      "file": "web/routes/lineage.py",
+      "implements": "NEW: Lineage endpoints — GET .../lineage (artifact lineage from JSONL), GET .../decisions (decision log from JSONL).",
+      "task_contract_section": "GET /projects/{id}/lineage (Doc 08 §7)",
+      "verbs_used": [],
+      "constraints_enforced": [
+        "Reads from JSONL via load_artifact_lineage() and load_decisions()",
+        "Empty lists returned gracefully when no data exists"
+      ]
+    },
+    {
+      "file": "web/routes/costs.py",
+      "implements": "NEW: Cost endpoint — GET .../costs returns CostReportResponse with formatted text, total cost, and structured breakdown (by tier/provider/role/model).",
+      "task_contract_section": "GET /projects/{id}/costs (Doc 08 §7)",
+      "verbs_used": [],
+      "constraints_enforced": [
+        "Delegates to format_cost_report() and aggregate_costs_by_*() functions",
+        "Both human-readable text and structured JSON returned"
+      ]
+    },
+    {
+      "file": "web/routes/export.py",
+      "implements": "NEW: Export endpoints — GET .../export (StreamingResponse zip download), GET .../export/info (file list with sizes).",
+      "task_contract_section": "Export Capability (Doc 09 Tier 7)",
+      "verbs_used": [],
+      "constraints_enforced": [
+        "StreamingResponse with application/zip content-type",
+        "Content-Disposition attachment header for browser download",
+        "Delegates to create_project_archive() pure function"
       ]
     },
     {
       "file": "cli/main.py",
-      "implements": "Updated: Three new commands — cmd_decisions (loads + formats decision log), cmd_lineage (loads + formats artifact lineage with optional --artifact filter), cmd_costs (calls format_cost_report). New subparsers: decisions, lineage, costs. Commands dict updated.",
-      "task_contract_section": "CLI Commands (Doc 09 Tier 6)",
+      "implements": "Updated: Two new commands — cmd_export (creates zip via create_project_archive, writes to --output path), cmd_serve (creates FastAPI app, runs with uvicorn on --host/--port). New subparsers: export (--project, --output), serve (--host, --port). Commands dict updated.",
+      "task_contract_section": "CLI Commands (Doc 09 Tier 7/8)",
       "verbs_used": [],
       "constraints_enforced": [
-        "All three commands require --project and verify project exists",
-        "Lineage command supports --artifact filter for specific file paths",
-        "Costs command delegates to format_cost_report for consistent formatting",
-        "Graceful empty state for all commands"
+        "Export command uses pure function from web.export",
+        "Serve command creates app via factory pattern",
+        "Default host 0.0.0.0, default port 8000"
       ]
     },
     {
-      "file": "tests/test_tier6.py",
-      "implements": "67 tests covering: JSONL persistence (8: create/append-only/load-empty/roundtrip for decisions/artifacts/usage), Decision recording (8: phase decision generates ID/timestamp/JSONL/project log, gate decision choose/reject/modify/combine), Artifact lineage (7: chain basic/with-decisions/no-task, register populates/appends/updates/traces-to-vision), Project health (5: empty/tasks/rejected/gates/updates), Cost tracker (9: aggregate by task/tier/provider/role/model, total, empty, format structure/empty), Architect hooks (10: vision_intake/tracks-usage/vision-transition/system-design/tracks-usage/design-choice/decomposition/build-supervision/review/process-review-lineage), Gate manager hooks (5: respond/approve/reject/modify/combine), Builder dispatch hooks (4: appends/provider/tier/dispatch-all), CLI (8: decisions/no-data/not-found/lineage/filter/costs/not-found/parser), Models (3: Decision/Artifact/ProjectHealth roundtrip).",
+      "file": "pyproject.toml",
+      "implements": "Updated: Added 'web*' to packages.find.include list.",
+      "task_contract_section": "Package Configuration",
+      "verbs_used": [],
+      "constraints_enforced": []
+    },
+    {
+      "file": "tests/test_tier7.py",
+      "implements": "72 tests covering: Export (8: archive BytesIO/contents/valid-zip/nested/missing/list-files/list-missing/state-json), Schemas (6: project-summary/detail/create-request/gate-input/cost-report/export-info), App factory (4: returns-FastAPI/state-projects-dir/state-ws-manager/health-endpoint), Projects routes (8: list-empty/populated/detail/404/create/create-relaxed/invalid-vision/status), Gates routes (8: list-empty/populated/detail/404/respond-choose/respond-reject/project-404/bad-gate), Artifacts routes (5: list-empty/populated/detail/404/project-404), Lineage routes (5: lineage-empty/decisions-empty/lineage-data/decisions-data/project-404), Costs routes (4: empty/with-data/project-404/breakdown-structure), Export routes (4: download/info/project-404/info-404), WebSocket (8: connect/broadcast/isolation/disconnect/active-count/dead-removal/multiple-clients/empty-broadcast), CLI (6: parser-export/parser-serve/export-writes/export-default/export-not-found/serve-uvicorn), Integration (6: full-flow/create-multiple/gate-respond/lineage-decisions/export-info-matches/health-available).",
       "coverage": [
-        "jsonl_persistence_decisions",
-        "jsonl_persistence_artifacts",
-        "jsonl_persistence_usage",
-        "decision_recording_phase",
-        "decision_recording_gate",
-        "artifact_lineage_chain",
-        "artifact_lineage_registration",
-        "project_health_calculation",
-        "cost_tracker_aggregation",
-        "cost_tracker_report",
-        "architect_hooks_all_phases",
-        "gate_manager_hooks",
-        "builder_dispatch_hooks",
-        "review_engine_hooks",
-        "cli_decisions_command",
-        "cli_lineage_command",
-        "cli_costs_command",
-        "model_serialization"
+        "export_archive_creation",
+        "export_file_listing",
+        "pydantic_schema_validation",
+        "app_factory_creation",
+        "health_endpoint",
+        "projects_crud",
+        "gates_list_detail_respond",
+        "artifacts_list_detail",
+        "lineage_decisions_endpoints",
+        "cost_report_endpoint",
+        "export_download_info",
+        "websocket_connect_broadcast_disconnect",
+        "websocket_project_isolation",
+        "cli_export_command",
+        "cli_serve_command",
+        "integration_full_flow"
       ]
     }
   ],

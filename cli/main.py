@@ -649,6 +649,48 @@ def cmd_costs(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_export(args: argparse.Namespace) -> int:
+    """Export a project as a zip archive."""
+    from web.export import create_project_archive
+
+    projects_dir = Path(args.projects_dir)
+    project_id = args.project
+
+    try:
+        ProjectState.load(project_id, projects_dir)
+    except FileNotFoundError:
+        print(f"Error: Project '{project_id}' not found", file=sys.stderr)
+        return 1
+
+    try:
+        buf, filename = create_project_archive(project_id, projects_dir)
+    except FileNotFoundError:
+        print(f"Error: Project directory not found", file=sys.stderr)
+        return 1
+
+    output_path = Path(getattr(args, "output", "") or filename)
+    output_path.write_bytes(buf.read())
+    print(f"Exported to {output_path} ({output_path.stat().st_size} bytes)")
+    return 0
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Start the web server."""
+    import uvicorn
+
+    from web.app import create_app
+
+    projects_dir = getattr(args, "projects_dir", DEFAULT_PROJECTS_DIR)
+    docs_dir = getattr(args, "docs_dir", DEFAULT_DOCS_DIR)
+    host = getattr(args, "host", "0.0.0.0")
+    port = int(getattr(args, "port", 8000))
+
+    app = create_app(projects_dir=projects_dir, docs_dir=docs_dir)
+    print(f"Starting Nexus Orchestrator web server on {host}:{port}")
+    uvicorn.run(app, host=host, port=port)
+    return 0
+
+
 def _print_gate_detail(gate) -> None:
     """Print detailed gate information to stdout."""
     print(f"\n{'=' * 60}")
@@ -763,6 +805,16 @@ def build_parser() -> argparse.ArgumentParser:
     costs_parser = subparsers.add_parser("costs", help="Show cost report")
     costs_parser.add_argument("--project", required=True, help="Project ID")
 
+    # --- export ---
+    export_parser = subparsers.add_parser("export", help="Export project as zip archive")
+    export_parser.add_argument("--project", required=True, help="Project ID")
+    export_parser.add_argument("--output", default="", help="Output file path (default: {project_id}_export.zip)")
+
+    # --- serve ---
+    serve_parser = subparsers.add_parser("serve", help="Start web server")
+    serve_parser.add_argument("--host", default="0.0.0.0", help="Host to bind (default: 0.0.0.0)")
+    serve_parser.add_argument("--port", default=8000, type=int, help="Port to bind (default: 8000)")
+
     return parser
 
 
@@ -786,6 +838,8 @@ def main(argv: list[str] | None = None) -> int:
         "decisions": cmd_decisions,
         "lineage": cmd_lineage,
         "costs": cmd_costs,
+        "export": cmd_export,
+        "serve": cmd_serve,
     }
 
     handler = commands.get(args.command)

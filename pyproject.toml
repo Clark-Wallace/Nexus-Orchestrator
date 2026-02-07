@@ -16,4 +16,4 @@ nexus-orch = "cli.main:main"
 testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
-include = ["orchestration*", "cli*"]
+include = ["orchestration*", "cli*", "web*"]
