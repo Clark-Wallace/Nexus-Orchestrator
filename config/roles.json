@@ -1,0 +1,26 @@
+{
+  "architect": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-5-20250929",
+    "max_iterations": 1,
+    "description": "Design authority — strong reasoning for system decomposition and design decisions"
+  },
+  "builder_complex": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-5-20250929",
+    "max_iterations": 15,
+    "description": "Complex subsystem implementation — code quality and instruction following"
+  },
+  "builder_simple": {
+    "provider": "deepseek",
+    "model": "deepseek-chat",
+    "max_iterations": 10,
+    "description": "Routine implementation — cost efficiency for simple tasks"
+  },
+  "reviewer": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-5-20250929",
+    "max_iterations": 1,
+    "description": "Fast validation and code quality checks"
+  }
+}

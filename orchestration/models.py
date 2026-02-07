@@ -46,6 +46,16 @@ class GateStatus(str, Enum):
     DEFERRED = "deferred"
 
 
+class GateResponseType(str, Enum):
+    """Human response types at a gate. Doc 07 §Human Response Options."""
+    CHOOSE = "choose"
+    CHOOSE_WITH_MODIFICATIONS = "choose_with_modifications"
+    COMBINE = "combine"
+    REVISE_AND_PROCEED = "revise_and_proceed"
+    EXPLORE_DIFFERENTLY = "explore_differently"
+    REJECT = "reject"
+
+
 class ReviewVerdict(str, Enum):
     ACCEPT = "accept"
     REJECT = "reject"
@@ -368,18 +378,63 @@ class BuilderTaskContract(JSONSerializable):
 # ---------------------------------------------------------------------------
 
 @dataclass
+class GateOption(JSONSerializable):
+    """Single option in a gate card. Doc 07 §Gate Card Structure."""
+    letter: str = ""
+    name: str = ""
+    summary: str = ""
+    key_characteristics: list[str] = field(default_factory=list)
+    optimizes_for: str = ""
+    costs: str = ""
+    consequence_1st: str = ""
+    consequence_2nd: str = ""
+    consequence_3rd: str = ""
+    subsystems: int = 0
+    builder_tasks: str = ""
+    estimated_cost: str = ""
+    timeline: str = ""
+    risk: str = ""
+    is_recommended: bool = False
+    recommendation_rationale: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "GateOption":
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
+class GateResponse(JSONSerializable):
+    """Human response to a gate. Doc 07 §Human Response Options."""
+    response_type: str = GateResponseType.CHOOSE.value
+    chosen_option: str = ""  # letter (A, B, C, D)
+    modifications: str = ""  # for choose_with_modifications
+    combine_instructions: str = ""  # for combine
+    revision_feedback: str = ""  # for revise_and_proceed
+    redirect_instructions: str = ""  # for explore_differently
+    rejection_reason: str = ""  # for reject
+    responded_at: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "GateResponse":
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
 class Gate(JSONSerializable):
     """Approval checkpoint where the human reviews and decides."""
     gate_id: str = ""
     gate_type: str = GateType.VISION_CONFIRMED.value
+    phase: str = ""
     trigger: str = ""
     status: str = GateStatus.PENDING.value
     summary: str = ""
+    architect_raw_response: str = ""
     artifacts: list[str] = field(default_factory=list)
     decisions_made: list[dict] = field(default_factory=list)
     questions: list[str] = field(default_factory=list)
     options: list[dict] = field(default_factory=list)
-    human_response: str | None = None
+    recommended_option: str = ""
+    human_response: dict | None = None
     approved_at: str | None = None
     conditions: list[str] = field(default_factory=list)
     created_at: str = ""

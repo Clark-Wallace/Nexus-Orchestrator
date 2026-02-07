@@ -1,123 +1,107 @@
 {
-  "task_id": "tier_1_state_and_skeleton",
-  "builder_session_id": "claude_opus_4_6_session_001",
+  "task_id": "tier_2_architect_session",
+  "builder_session_id": "claude_opus_4_6_session_002",
   "completed_at": "2026-02-06T00:00:00Z",
+  "previous_tier": "tier_1_state_and_skeleton",
 
   "artifacts": [
     {
       "file": "orchestration/models.py",
-      "implements": "Shared data models: VisionContract (with strict validation + VisionValidationError), BuilderTaskContract, Gate, GateType, GateStatus, ReviewResult, ReviewVerdict, Decision, Artifact, BuilderOutputManifest, TokenUsage, BuilderArtifact, IncompleteItem, ProjectHealth, Phase, TaskType, TaskStatus — all with JSON serialization",
-      "task_contract_section": "Data models for Vision Contract, Builder Task Contract, Gate, Review Result",
-      "verbs_used": [],
-      "constraints_enforced": ["All models serialize to/from JSON", "Schemas follow Doc 07 and Doc 08", "Strict mode validates required Vision Contract fields by default"]
-    },
-    {
-      "file": "orchestration/project_state.py",
-      "implements": "ProjectState model with full JSON persistence under projects/{project_id}/project_state.json, directory structure creation per Doc 08 file layout, save/load/list operations, status summary per Doc 07 Progress Tracking format",
-      "task_contract_section": "ProjectState model with JSON persistence",
-      "verbs_used": [],
-      "constraints_enforced": ["JSON files on disk per project", "Standard subdirectory structure per Doc 08"]
-    },
-    {
-      "file": "orchestration/constitution.py",
-      "implements": "ConstitutionEnforcer — loads numbered markdown docs from constitutional_docs/, builds Architect context per phase (Context Budget table Doc 07), builds Builder context per task type (Context Budget table Doc 07), section extraction from markdown headings",
-      "task_contract_section": "ConstitutionEnforcer with Context Budget implementation",
+      "implements": "Updated: Added GateResponseType enum (6 response types), GateOption dataclass (letter, name, summary, tradeoffs, consequence chain, build impact, risk, recommendation), GateResponse dataclass (response_type, chosen_option, modifications, combine_instructions, revision_feedback, redirect_instructions, rejection_reason). Updated Gate dataclass with phase, architect_raw_response, recommended_option fields; changed human_response from str to dict.",
+      "task_contract_section": "Gate Card Structure, Human Response Options (Doc 07)",
       "verbs_used": [],
       "constraints_enforced": [
-        "Architect always gets: Doc 07 full, Vision Contract, Architecture Template, Journal (last 3), Project Status",
-        "Architect phase context: Vision Intake=Doc01 summary, System Design=Doc01+Doc05§Pipeline, Detailed Design=Doc03+04+05, Build Decomposition=Doc03 index, Build Supervision=Doc03 relevant+Doc04§Validation, Validation=Doc05+Doc04§Determinism",
-        "Builder always gets: Doc 00, Task Contract only",
-        "Builder task context: state_schema=Doc02§State, flow=Doc02§Flows+Doc03 A/C/D, constraint=Doc02§Constraints+Doc04§Supremacy, failure_recovery=Doc02§8+Doc03 E/F/L, dependency_cascade=Doc02§7+Doc03 C/G, ux_layer=Doc05+Doc04§UX",
-        "Minimum context principle: more context dilutes attention"
+        "GateOption follows Doc 07 Gate Card Structure exactly: consequence chain (1st/2nd/3rd order), build impact, tradeoffs",
+        "All 6 response types from Doc 07: choose, choose_with_modifications, combine, revise_and_proceed, explore_differently, reject",
+        "All models serialize via JSONSerializable mixin (to_dict/from_dict)"
+      ]
+    },
+    {
+      "file": "config/roles.json",
+      "implements": "Provider routing config per Doc 08 Provider Strategy. Maps roles (architect, builder_complex, builder_simple, reviewer) to providers/models with max_iterations.",
+      "task_contract_section": "Provider Strategy (Doc 08 §3)",
+      "verbs_used": [],
+      "constraints_enforced": [
+        "Architect: Anthropic Claude Sonnet 4.5, max_iterations=1 (design authority, strong reasoning)",
+        "Builder complex: Anthropic Claude Sonnet 4.5, max_iterations=15",
+        "Builder simple: DeepSeek, max_iterations=10 (cost efficiency)",
+        "Reviewer: Anthropic Claude Sonnet 4.5, max_iterations=1"
+      ]
+    },
+    {
+      "file": "orchestration/gate_manager.py",
+      "implements": "GateManager — full gate lifecycle: create_gate (saves JSON to projects/{id}/gates/{gate_id}.json, sets pending_gate and blocked_on), respond_to_gate (validates pending status, records response, updates status to approved/rejected, clears blocked state), build_response_message (translates structured GateResponse into natural language for Architect), list_gates, persistence helpers.",
+      "task_contract_section": "Controls (Doc 08 §5), Gate Card Structure (Doc 07)",
+      "verbs_used": [],
+      "constraints_enforced": [
+        "Gate activates → orchestration stops all work (blocked_on set)",
+        "Nothing proceeds until human responds (pending_gate check)",
+        "Gates stored as JSON in projects/{project_id}/gates/{gate_id}.json",
+        "build_response_message produces natural language per Doc 07 response format"
+      ]
+    },
+    {
+      "file": "orchestration/journal.py",
+      "implements": "Architect's Journal — append-only markdown log at projects/{id}/architect_journal.md. format_entry per Doc 07 template (date, phase, tier, context, reasoning, options explored, open questions, concerns, notes). append_entry, load_entries, load_recent_entries (for ConstitutionEnforcer context injection).",
+      "task_contract_section": "Architect's Journal (Doc 07)",
+      "verbs_used": [],
+      "constraints_enforced": [
+        "Append-only (never modify existing entries)",
+        "Persists across sessions, loaded into Architect context on resume",
+        "Format follows Doc 07 §Architect's Journal structure"
+      ]
+    },
+    {
+      "file": "orchestration/architect.py",
+      "implements": "ArchitectSession — manages AI Architect conversation via NexusConnector. ConnectorProtocol for dependency injection (tests mock, prod uses real connector). Session lifecycle: create_session (builds constitutional context as system prompt), resume_session (replays persisted history), save_session. Phase handlers: run_vision_intake (sends vision, extracts questions, creates gate), process_vision_response, run_system_design (prompts for 2-4 options per Gate Card Structure, parses options), process_design_response (stores Architecture Template). Parsing helpers for questions, gate options, and recommendations.",
+      "task_contract_section": "Architect Session (Doc 09 Tier 2), Phase 1-3 (Doc 07)",
+      "verbs_used": [],
+      "constraints_enforced": [
+        "All AI interaction through Nexus sessions — no direct API calls",
+        "Constitutional context injected as system prompt via ConstitutionEnforcer",
+        "ConnectorProtocol enables mocked testing without API keys",
+        "Session persistence: conversation history saved to projects/{id}/architect_session.json",
+        "Resume: recreate connector with fresh constitutional context, replay history",
+        "Phase flow: vision_intake → [gate] → system_design → [gate] → detailed_design",
+        "Gate Card Structure: 2-4 options with consequence chains, build impact, risk",
+        "Journal entries appended after each phase transition"
       ]
     },
     {
       "file": "cli/main.py",
-      "implements": "CLI skeleton with nexus-orch new --vision <path> [--relaxed] and nexus-orch status --project <id>, argparse-based, strict validation by default with --relaxed bypass",
-      "task_contract_section": "CLI skeleton",
+      "implements": "Updated: Added Tier 2 CLI commands — architect (start/resume session, auto-detects phase), approve (--choice/--modify/--combine/--revise/--redirect for all 6 response types), reject (--feedback), gates (list all gates with status). Role config loading from config/roles.json. Gate detail display.",
+      "task_contract_section": "CLI commands (Doc 09 Tier 2)",
       "verbs_used": [],
-      "constraints_enforced": ["CLI interface matches Doc 09 and README examples", "Strict mode on by default, --relaxed flag to accept freeform input"]
-    },
-    {
-      "file": "tests/test_project_state.py",
-      "implements": "Tests for VisionContract markdown parsing (12 tests), ProjectState JSON persistence round-trip (9 tests), model serialization round-trips (6 tests), strict mode validation (9 tests)",
-      "coverage": [
-        "vision_contract_parsing",
-        "project_state_save_load",
-        "directory_structure_creation",
-        "gate_persistence",
-        "task_persistence",
-        "decision_persistence",
-        "project_listing",
-        "error_handling",
-        "status_summary_format",
-        "model_json_roundtrips",
-        "strict_mode_rejects_incomplete",
-        "strict_mode_accepts_complete",
-        "relaxed_mode_bypass",
-        "error_message_clarity",
-        "recommended_field_warnings"
+      "constraints_enforced": [
+        "architect command checks for pending gate before proceeding",
+        "approve supports all 6 GateResponseType variants via CLI flags",
+        "reject stores rejection reason",
+        "gates lists all gates with status markers"
       ]
     },
     {
-      "file": "tests/test_constitution.py",
-      "implements": "Tests for ConstitutionEnforcer: doc loading (6 tests), architect context building by phase (9 tests), builder context building by task type (9 tests), section extraction (3 tests), CLI integration smoke tests (6 tests incl. strict/relaxed)",
+      "file": "tests/test_tier2.py",
+      "implements": "55 tests covering: Journal (format, append, load, recent, empty, path), GateManager (create, create with options, respond choose/choose_with_modifications/revise/reject, respond non-pending raises, list, persistence, build_response_message for all types, find not found), ArchitectSession (create session, vision intake creates gate, saves session, appends journal, process vision response advances phase, system design creates gate with options, process design response stores template, session persistence roundtrip, resume replays history), Response parsing (extract questions, numbered questions, parse options, recommended, option fields, empty), Gate models (option roundtrip, response roundtrip, gate with options roundtrip, enum values), CLI (gates empty/list, approve choose/revise/combine/no-args-fails/nonexistent, reject/nonexistent, architect blocked/nonexistent), Integration (full gate lifecycle).",
       "coverage": [
-        "doc_loading",
-        "architect_context_always_loaded",
-        "architect_context_per_phase",
-        "architect_journal_inclusion",
-        "builder_context_always_loaded",
-        "builder_context_per_task_type",
-        "section_extraction",
-        "cli_new_relaxed",
-        "cli_new_strict_rejects",
-        "cli_new_strict_accepts",
-        "cli_status_command"
+        "journal_format_append_load",
+        "gate_create_respond_list_persist",
+        "gate_response_message_all_types",
+        "architect_session_create_resume",
+        "vision_intake_gate_creation",
+        "system_design_option_parsing",
+        "design_response_template_storage",
+        "session_persistence_roundtrip",
+        "response_parsing_questions_options",
+        "gate_model_serialization",
+        "cli_architect_approve_reject_gates",
+        "full_gate_lifecycle_integration"
       ]
-    },
-    {
-      "file": "orchestration/__init__.py",
-      "implements": "Package init",
-      "task_contract_section": "Scaffolding",
-      "verbs_used": [],
-      "constraints_enforced": []
-    },
-    {
-      "file": "cli/__init__.py",
-      "implements": "Package init",
-      "task_contract_section": "Scaffolding",
-      "verbs_used": [],
-      "constraints_enforced": []
-    },
-    {
-      "file": "tests/__init__.py",
-      "implements": "Package init",
-      "task_contract_section": "Scaffolding",
-      "verbs_used": [],
-      "constraints_enforced": []
-    },
-    {
-      "file": "pyproject.toml",
-      "implements": "Project configuration with nexus-orch entry point, pytest config",
-      "task_contract_section": "Scaffolding",
-      "verbs_used": [],
-      "constraints_enforced": []
-    },
-    {
-      "file": "constitutional_docs/",
-      "implements": "Copy of Docs 00-09 into runtime config directory per Doc 09 file structure",
-      "task_contract_section": "Constitutional doc stack as runtime config",
-      "verbs_used": [],
-      "constraints_enforced": []
     }
   ],
 
   "incomplete": [],
 
-  "questions_for_architect": [
-    "Nexus Connector repo explored (github.com/Clark-Wallace/The-Nexus-Connector). For Tier 2: import as installed package (pip install -e) or vendor/copy relevant modules?"
-  ],
+  "questions_for_architect": [],
 
   "token_usage": {
     "input": 0,
