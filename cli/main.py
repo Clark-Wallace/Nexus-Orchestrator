@@ -547,6 +547,108 @@ def cmd_build(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Tier 6 — Lineage and Observability commands
+# ---------------------------------------------------------------------------
+
+def cmd_decisions(args: argparse.Namespace) -> int:
+    """Show decision log for a project."""
+    from orchestration.lineage import load_decisions
+
+    projects_dir = Path(args.projects_dir)
+    project_id = args.project
+
+    try:
+        ProjectState.load(project_id, projects_dir)
+    except FileNotFoundError:
+        print(f"Error: Project '{project_id}' not found", file=sys.stderr)
+        return 1
+
+    decisions = load_decisions(project_id, projects_dir)
+    if not decisions:
+        print("No decisions recorded.")
+        return 0
+
+    print(f"Decision Log for {project_id} ({len(decisions)} decisions):")
+    print("=" * 60)
+    for d in decisions:
+        print(f"\n  [{d.decision_id}]  {d.timestamp}")
+        print(f"  Type:    {d.decision_type}")
+        print(f"  By:      {d.made_by}")
+        print(f"  Desc:    {d.description}")
+        if d.rationale:
+            print(f"  Reason:  {d.rationale}")
+        if d.constitutional_basis:
+            print(f"  Const:   {d.constitutional_basis}")
+        if d.vision_reference:
+            print(f"  Vision:  {d.vision_reference}")
+
+    return 0
+
+
+def cmd_lineage(args: argparse.Namespace) -> int:
+    """Show artifact lineage for a project."""
+    from orchestration.lineage import load_artifact_lineage, load_decisions
+
+    projects_dir = Path(args.projects_dir)
+    project_id = args.project
+
+    try:
+        ProjectState.load(project_id, projects_dir)
+    except FileNotFoundError:
+        print(f"Error: Project '{project_id}' not found", file=sys.stderr)
+        return 1
+
+    artifacts = load_artifact_lineage(project_id, projects_dir)
+    artifact_filter = getattr(args, "artifact", None)
+
+    if artifact_filter:
+        artifacts = [a for a in artifacts if artifact_filter in a.file_path]
+
+    if not artifacts:
+        print("No artifact lineage recorded.")
+        return 0
+
+    # Load decisions for resolving chain IDs
+    decisions = load_decisions(project_id, projects_dir)
+    dec_map = {d.decision_id: d.description for d in decisions}
+
+    print(f"Artifact Lineage for {project_id} ({len(artifacts)} artifacts):")
+    print("=" * 60)
+    for a in artifacts:
+        print(f"\n  [{a.artifact_id}]  {a.file_path}")
+        print(f"  Produced by: {a.produced_by}  Task: {a.task_id or 'N/A'}")
+        print(f"  Tier: {a.tier}  Subsystem: {a.subsystem or 'N/A'}")
+        if a.lineage:
+            print(f"  Lineage chain:")
+            for item in a.lineage:
+                resolved = dec_map.get(item, "")
+                if resolved:
+                    print(f"    -> {item}: {resolved}")
+                else:
+                    print(f"    -> {item}")
+
+    return 0
+
+
+def cmd_costs(args: argparse.Namespace) -> int:
+    """Show cost report for a project."""
+    from orchestration.cost_tracker import format_cost_report
+
+    projects_dir = Path(args.projects_dir)
+    project_id = args.project
+
+    try:
+        ProjectState.load(project_id, projects_dir)
+    except FileNotFoundError:
+        print(f"Error: Project '{project_id}' not found", file=sys.stderr)
+        return 1
+
+    report = format_cost_report(project_id, str(projects_dir))
+    print(report)
+    return 0
+
+
 def _print_gate_detail(gate) -> None:
     """Print detailed gate information to stdout."""
     print(f"\n{'=' * 60}")
@@ -648,6 +750,19 @@ def build_parser() -> argparse.ArgumentParser:
     review_parser = subparsers.add_parser("review", help="Run review pipeline on builder output")
     review_parser.add_argument("--project", required=True, help="Project ID")
 
+    # --- decisions ---
+    decisions_parser = subparsers.add_parser("decisions", help="Show decision log")
+    decisions_parser.add_argument("--project", required=True, help="Project ID")
+
+    # --- lineage ---
+    lineage_parser = subparsers.add_parser("lineage", help="Show artifact lineage")
+    lineage_parser.add_argument("--project", required=True, help="Project ID")
+    lineage_parser.add_argument("--artifact", default="", help="Filter by artifact file path")
+
+    # --- costs ---
+    costs_parser = subparsers.add_parser("costs", help="Show cost report")
+    costs_parser.add_argument("--project", required=True, help="Project ID")
+
     return parser
 
 
@@ -668,6 +783,9 @@ def main(argv: list[str] | None = None) -> int:
         "gates": cmd_gates,
         "build": cmd_build,
         "review": cmd_review,
+        "decisions": cmd_decisions,
+        "lineage": cmd_lineage,
+        "costs": cmd_costs,
     }
 
     handler = commands.get(args.command)

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from orchestration.constitution import ConstitutionEnforcer
+from orchestration.lineage import append_usage as _append_usage
 from orchestration.models import (
     BuilderOutputManifest,
     BuilderTaskContract,
@@ -112,6 +113,24 @@ class BuilderSession:
             provider=self.role_config.get("provider", ""),
             model=self.role_config.get("model", ""),
         ).to_dict()
+
+        # Tier 6: track builder usage
+        _append_usage(
+            usage_entry={
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "task_id": self.task.task_id,
+                "role": "builder",
+                "provider": self.role_config.get("provider", ""),
+                "model": self.role_config.get("model", ""),
+                "input_tokens": usage.get("input", 0),
+                "output_tokens": usage.get("output", 0),
+                "estimated_cost": usage.get("estimated_cost", 0.0),
+                "phase": "build_supervision",
+                "tier": self.task.build_tier,
+            },
+            project_id=self.project_id,
+            projects_dir=self.projects_dir,
+        )
 
         # Extract and save code artifacts
         code_artifacts = extract_code_artifacts(content)

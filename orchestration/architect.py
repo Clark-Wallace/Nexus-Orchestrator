@@ -31,6 +31,12 @@ from orchestration.decomposer import (
     TaskDecomposer,
     save_task_contracts,
 )
+from orchestration.lineage import (
+    append_usage,
+    record_phase_decision,
+    register_artifact_with_lineage,
+    update_project_health,
+)
 from orchestration.models import (
     Artifact,
     BuilderTaskContract,
@@ -287,6 +293,33 @@ class ArchitectSession:
             reasoning="Need human clarification before proceeding to system design.",
         )
 
+        # Tier 6: record decision and usage
+        record_phase_decision(
+            self.project, self.projects_dir,
+            decision_type="vision_review",
+            description="Architect reviewed Vision Contract and produced clarifying questions.",
+            rationale="Need human clarification before proceeding to system design.",
+            made_by="architect",
+        )
+        usage = response.get("usage", {})
+        if usage:
+            append_usage(
+                usage_entry={
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "task_id": "",
+                    "role": "architect",
+                    "provider": self.role_config.get("provider", ""),
+                    "model": self.role_config.get("model", ""),
+                    "input_tokens": usage.get("input", 0),
+                    "output_tokens": usage.get("output", 0),
+                    "estimated_cost": usage.get("estimated_cost", 0.0),
+                    "phase": self.project.current_phase,
+                    "tier": self.project.current_tier,
+                },
+                project_id=self.project.project_id,
+                projects_dir=self.projects_dir,
+            )
+
         self.save_session()
         self.project.save(self.projects_dir)
 
@@ -306,6 +339,16 @@ class ArchitectSession:
             await self.connector.send_message(response_msg)
 
         self.project.current_phase = Phase.SYSTEM_DESIGN.value
+
+        # Tier 6: record phase transition
+        record_phase_decision(
+            self.project, self.projects_dir,
+            decision_type="phase_transition",
+            description="Vision confirmed. Advancing to System Design.",
+            rationale="Human approved vision intake results.",
+            made_by="architect",
+        )
+
         self.save_session()
         self.project.save(self.projects_dir)
 
@@ -379,6 +422,33 @@ class ArchitectSession:
             reasoning=f"Presented {len(options)} options. Recommended: {recommended}.",
         )
 
+        # Tier 6: record decision and usage
+        record_phase_decision(
+            self.project, self.projects_dir,
+            decision_type="design_options_presented",
+            description=f"Architect presented {len(options)} system design options.",
+            rationale=f"Recommended option: {recommended}.",
+            made_by="architect",
+        )
+        usage = response.get("usage", {})
+        if usage:
+            append_usage(
+                usage_entry={
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "task_id": "",
+                    "role": "architect",
+                    "provider": self.role_config.get("provider", ""),
+                    "model": self.role_config.get("model", ""),
+                    "input_tokens": usage.get("input", 0),
+                    "output_tokens": usage.get("output", 0),
+                    "estimated_cost": usage.get("estimated_cost", 0.0),
+                    "phase": self.project.current_phase,
+                    "tier": self.project.current_tier,
+                },
+                project_id=self.project.project_id,
+                projects_dir=self.projects_dir,
+            )
+
         self.save_session()
         self.project.save(self.projects_dir)
 
@@ -415,6 +485,33 @@ class ArchitectSession:
             self.project.architecture_template = content
 
         self.project.current_phase = Phase.DETAILED_DESIGN.value
+
+        # Tier 6: record design choice and usage
+        record_phase_decision(
+            self.project, self.projects_dir,
+            decision_type="design_choice",
+            description="Design direction chosen. Producing Architecture Template.",
+            rationale="Human selected design option. Expanding to detailed design.",
+            made_by="architect",
+        )
+        usage = response.get("usage", {})
+        if usage:
+            append_usage(
+                usage_entry={
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "task_id": "",
+                    "role": "architect",
+                    "provider": self.role_config.get("provider", ""),
+                    "model": self.role_config.get("model", ""),
+                    "input_tokens": usage.get("input", 0),
+                    "output_tokens": usage.get("output", 0),
+                    "estimated_cost": usage.get("estimated_cost", 0.0),
+                    "phase": self.project.current_phase,
+                    "tier": self.project.current_tier,
+                },
+                project_id=self.project.project_id,
+                projects_dir=self.projects_dir,
+            )
 
         _append_phase_journal(
             self.project, self.projects_dir,
@@ -499,6 +596,15 @@ class ArchitectSession:
             f"Ready for human review before dispatching.",
         )
 
+        # Tier 6: record decomposition decision
+        record_phase_decision(
+            self.project, self.projects_dir,
+            decision_type="build_decomposition",
+            description=f"Architecture decomposed into {cost.task_count} builder tasks.",
+            rationale=f"Cost estimate: ${cost.cost_low:.2f}-${cost.cost_high:.2f}.",
+            made_by="architect",
+        )
+
         self.save_session()
         self.project.save(self.projects_dir)
 
@@ -562,6 +668,15 @@ class ArchitectSession:
         save_task_contracts(tasks, self.project.project_id, self.projects_dir)
 
         self.project.current_phase = Phase.BUILD_SUPERVISION.value
+
+        # Tier 6: record decomposition approved
+        record_phase_decision(
+            self.project, self.projects_dir,
+            decision_type="decomposition_approved",
+            description=f"Decomposition approved. {len(tasks)} tasks queued for build.",
+            rationale="Advancing to build supervision phase.",
+            made_by="architect",
+        )
 
         _append_phase_journal(
             self.project, self.projects_dir,
@@ -660,6 +775,17 @@ class ArchitectSession:
             reasoning="All builder tasks dispatched. Results collected for human review.",
         )
 
+        # Tier 6: record build complete decision + update health
+        record_phase_decision(
+            self.project, self.projects_dir,
+            decision_type="build_complete",
+            description=f"Build complete: {build_result.completed_count} tasks completed, "
+            f"{build_result.failed_count} failed. Cost: ${build_result.total_cost:.4f}.",
+            rationale="All builder tasks dispatched and results collected.",
+            made_by="architect",
+        )
+        update_project_health(self.project)
+
         self.project.save(self.projects_dir)
 
         return gate
@@ -706,6 +832,16 @@ class ArchitectSession:
 
         results = await engine.review_all()
         self._review_results = results
+
+        # Tier 6: record review decision + update health
+        record_phase_decision(
+            self.project, self.projects_dir,
+            decision_type="review_complete",
+            description=f"Review pipeline completed for {len(results)} tasks.",
+            rationale="All builder output validated through 3-stage review pipeline.",
+            made_by="architect",
+        )
+        update_project_health(self.project)
 
         # Count verdicts
         accepted = sum(1 for r in results if r.verdict == ReviewVerdict.ACCEPT.value)
@@ -779,7 +915,9 @@ class ArchitectSession:
                                     tier=self.project.current_tier,
                                     review_id=result.review_id,
                                 )
-                                self.project.artifacts[file_path] = artifact
+                                register_artifact_with_lineage(
+                                    artifact, self.project, self.projects_dir
+                                )
                 except FileNotFoundError:
                     continue
 

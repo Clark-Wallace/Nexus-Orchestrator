@@ -27,6 +27,7 @@ from orchestration.models import (
     ReviewVerdict,
 )
 from orchestration.project_state import ProjectState, generate_id
+from orchestration.lineage import append_usage as _append_usage
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +508,27 @@ class ReviewEngine:
         prompt = _build_review_prompt(manifest, task)
         response = await connector.send_message(prompt)
         content = response.get("content", "")
+
+        # Tier 6: track reviewer usage
+        review_usage = response.get("usage", {})
+        if review_usage:
+            from datetime import datetime, timezone as _tz
+            _append_usage(
+                usage_entry={
+                    "timestamp": datetime.now(_tz.utc).isoformat(),
+                    "task_id": task.task_id,
+                    "role": "reviewer",
+                    "provider": self.role_config.get("provider", ""),
+                    "model": self.role_config.get("model", ""),
+                    "input_tokens": review_usage.get("input", 0),
+                    "output_tokens": review_usage.get("output", 0),
+                    "estimated_cost": review_usage.get("estimated_cost", 0.0),
+                    "phase": "validation",
+                    "tier": getattr(self.project, "current_tier", 0),
+                },
+                project_id=self.project.project_id,
+                projects_dir=self.projects_dir,
+            )
 
         notes, verdict = _parse_review_response(content)
         return notes, verdict

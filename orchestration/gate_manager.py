@@ -22,6 +22,7 @@ from orchestration.models import (
     GateType,
 )
 from orchestration.project_state import ProjectState, generate_id
+from orchestration.lineage import record_gate_decision
 
 
 class GateManager:
@@ -112,6 +113,9 @@ class GateManager:
 
         # Save updated gate
         self._save_gate(project.project_id, gate)
+
+        # Tier 6: record human decision
+        record_gate_decision(project, self.projects_dir, gate, response)
 
         # Clear project blocked state
         project.pending_gate = None
