@@ -32,12 +32,16 @@ from orchestration.decomposer import (
     save_task_contracts,
 )
 from orchestration.models import (
+    Artifact,
     BuilderTaskContract,
+    BuildResult,
     Gate,
     GateOption,
     GateResponse,
     GateType,
     Phase,
+    ReviewResult,
+    ReviewVerdict,
     TierCostEstimate,
 )
 from orchestration.project_state import ProjectState, generate_id
@@ -569,6 +573,225 @@ class ArchitectSession:
         self.project.save(self.projects_dir)
 
         return tasks
+
+    # ------------------------------------------------------------------
+    # Phase 5 — Build Supervision (Doc 07 §Phase 5)
+    # ------------------------------------------------------------------
+
+    async def run_build_supervision(
+        self,
+        builder_connector_factory: ConnectorFactory | None = None,
+    ) -> Gate:
+        """Dispatch all tasks to builders and collect results.
+
+        Process:
+        1. Creates BuilderDispatcher with task_queue, connector_factory, roles_config
+        2. Calls dispatch_all() — dispatches all tasks respecting parallel groups
+        3. Aggregates results into BuildResult
+        4. Updates project state: moves tasks from queue → completed_tasks
+        5. Creates TIER_COMPLETE gate with build summary
+        6. Appends journal entry
+        7. Returns gate for human review
+
+        Args:
+            builder_connector_factory: Factory for builder connectors. If None,
+                uses self.connector_factory (useful for testing).
+        """
+        from orchestration.builder_dispatch import BuilderDispatcher
+
+        roles_config = self._load_roles_config()
+        factory = builder_connector_factory or self.connector_factory
+
+        dispatcher = BuilderDispatcher(
+            project=self.project,
+            projects_dir=self.projects_dir,
+            constitution=self.constitution,
+            connector_factory=factory,
+            roles_config=roles_config,
+        )
+
+        build_result = await dispatcher.dispatch_all()
+
+        # Move tasks from queue → completed_tasks
+        for task in self.project.task_queue:
+            if task.status == "completed":
+                self.project.completed_tasks.append(task)
+        self.project.task_queue = [
+            t for t in self.project.task_queue if t.status != "completed"
+        ]
+
+        # Store the build result on session for post-gate access
+        self._build_result = build_result
+
+        # Build gate summary
+        summary_parts = [
+            f"Build complete: {build_result.completed_count} tasks completed, "
+            f"{build_result.failed_count} failed.",
+        ]
+        if build_result.total_cost > 0:
+            summary_parts.append(f"Total cost: ${build_result.total_cost:.4f}")
+        if build_result.total_input_tokens > 0 or build_result.total_output_tokens > 0:
+            summary_parts.append(
+                f"Tokens: {build_result.total_input_tokens} in / "
+                f"{build_result.total_output_tokens} out"
+            )
+        if build_result.questions_for_architect:
+            summary_parts.append(
+                f"Builder questions: {len(build_result.questions_for_architect)}"
+            )
+        if build_result.incomplete_items:
+            summary_parts.append(
+                f"Incomplete items: {len(build_result.incomplete_items)}"
+            )
+
+        summary = "\n".join(summary_parts)
+
+        gate = self.gate_manager.create_gate(
+            project=self.project,
+            gate_type=GateType.TIER_COMPLETE,
+            summary=summary,
+            questions=build_result.questions_for_architect,
+        )
+
+        _append_phase_journal(
+            self.project, self.projects_dir,
+            context=f"Build dispatched: {build_result.completed_count} tasks completed, "
+            f"{build_result.failed_count} failed.",
+            reasoning="All builder tasks dispatched. Results collected for human review.",
+        )
+
+        self.project.save(self.projects_dir)
+
+        return gate
+
+    # ------------------------------------------------------------------
+    # Phase 6 — Review / Validation (Doc 08 §4)
+    # ------------------------------------------------------------------
+
+    async def run_review_phase(
+        self,
+        reviewer_connector_factory: ConnectorFactory | None = None,
+    ) -> Gate:
+        """Run the three-stage review pipeline on all completed builder output.
+
+        Process:
+        1. Sets phase to VALIDATION
+        2. Loads roles_config, gets reviewer role config
+        3. Creates ReviewEngine with reviewer factory
+        4. Calls review_all() → list of ReviewResults
+        5. Builds gate summary
+        6. Creates gate (SCOPE_CHANGE if escalation, else TIER_COMPLETE)
+        7. Appends journal entry
+        8. Saves project, returns gate
+
+        Args:
+            reviewer_connector_factory: Factory for reviewer connectors.
+                If None, uses self.connector_factory.
+        """
+        from orchestration.review_engine import ReviewEngine, load_review_results
+
+        self.project.current_phase = Phase.VALIDATION.value
+
+        roles_config = self._load_roles_config()
+        reviewer_role = roles_config.get("reviewer", self.role_config)
+        factory = reviewer_connector_factory or self.connector_factory
+
+        engine = ReviewEngine(
+            project=self.project,
+            projects_dir=self.projects_dir,
+            constitution=self.constitution,
+            connector_factory=factory,
+            role_config=reviewer_role,
+        )
+
+        results = await engine.review_all()
+        self._review_results = results
+
+        # Count verdicts
+        accepted = sum(1 for r in results if r.verdict == ReviewVerdict.ACCEPT.value)
+        rejected = sum(1 for r in results if r.verdict == ReviewVerdict.REJECT.value)
+        revise = sum(1 for r in results if r.verdict == ReviewVerdict.REVISE.value)
+        escalated = sum(1 for r in results if r.verdict == ReviewVerdict.ESCALATE.value)
+
+        summary_parts = [
+            f"Review complete: {len(results)} tasks reviewed.",
+            f"  Accepted: {accepted}",
+            f"  Rejected: {rejected}",
+            f"  Need revision: {revise}",
+            f"  Escalated: {escalated}",
+        ]
+        summary = "\n".join(summary_parts)
+
+        # Choose gate type based on results
+        if escalated > 0:
+            gate_type = GateType.SCOPE_CHANGE
+        else:
+            gate_type = GateType.TIER_COMPLETE
+
+        gate = self.gate_manager.create_gate(
+            project=self.project,
+            gate_type=gate_type,
+            summary=summary,
+        )
+
+        _append_phase_journal(
+            self.project, self.projects_dir,
+            context=f"Review pipeline complete: {accepted} accepted, {rejected} rejected, "
+            f"{revise} need revision, {escalated} escalated.",
+            reasoning="All builder output validated through 3-stage review pipeline.",
+        )
+
+        self.project.save(self.projects_dir)
+
+        return gate
+
+    async def process_review_response(self, gate: Gate) -> list[ReviewResult]:
+        """Process human response to the review gate.
+
+        If approved: register accepted artifacts in project.artifacts.
+        Returns the review results.
+        """
+        from orchestration.review_engine import load_review_results
+        from orchestration.builder_dispatch import load_builder_manifest
+
+        results = getattr(self, "_review_results", None)
+        if results is None:
+            results = load_review_results(
+                self.project.project_id, self.projects_dir
+            )
+
+        # Register accepted artifacts
+        for result in results:
+            if result.verdict == ReviewVerdict.ACCEPT.value:
+                try:
+                    manifest = load_builder_manifest(
+                        result.task_id, self.project.project_id, self.projects_dir
+                    )
+                    for art_data in manifest.artifacts:
+                        if isinstance(art_data, dict):
+                            file_path = art_data.get("file", "")
+                            if file_path:
+                                artifact = Artifact(
+                                    artifact_id=generate_id("art"),
+                                    file_path=file_path,
+                                    produced_by="builder",
+                                    task_id=result.task_id,
+                                    tier=self.project.current_tier,
+                                    review_id=result.review_id,
+                                )
+                                self.project.artifacts[file_path] = artifact
+                except FileNotFoundError:
+                    continue
+
+        # Add review results to project review_log
+        self.project.review_log = [
+            ReviewResult.from_dict(r.to_dict()) if hasattr(r, "to_dict") else r
+            for r in results
+        ]
+
+        self.project.save(self.projects_dir)
+
+        return results
 
     def _load_roles_config(self) -> dict:
         """Load roles config from config/roles.json."""

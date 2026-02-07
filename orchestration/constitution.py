@@ -287,8 +287,15 @@ class ConstitutionEnforcer:
         return {"valid": True, "violations": []}
 
     def validate_builder_output(self, output: str, task: BuilderTaskContract) -> dict:
-        """Stub — constitutional validation of builder output. Tier 4+."""
-        return {"valid": True, "violations": []}
+        """Constitutional validation of builder output — scope compliance check.
+
+        Lightweight string matching only. Heavy semantic review is Stage 2's job.
+        """
+        violations = []
+        for boundary in task.scope_must_not_touch:
+            if boundary.lower() in output.lower():
+                violations.append(f"Output references out-of-scope area: '{boundary}'")
+        return {"valid": len(violations) == 0, "violations": violations}
 
 
 # ---------------------------------------------------------------------------

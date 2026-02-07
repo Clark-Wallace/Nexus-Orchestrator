@@ -1,129 +1,85 @@
 {
-  "task_id": "tier_3_task_decomposition",
-  "builder_session_id": "claude_opus_4_6_session_003",
+  "task_id": "tier_5_review_pipeline",
+  "builder_session_id": "claude_opus_4_6_session_005",
   "completed_at": "2026-02-06T00:00:00Z",
-  "previous_tier": "tier_2_architect_session",
+  "previous_tier": "tier_4_builder_dispatch",
 
   "artifacts": [
     {
-      "file": "orchestration/models.py",
-      "implements": "Updated: Added BUILD_DECOMPOSITION to GateType enum. Added depends_on (list[str]) and parallel_group (int) fields to BuilderTaskContract. Added TierCostEstimate dataclass (task_count, provider_mix, cost_low/mid/high, cost_drivers, savings_opportunities).",
-      "task_contract_section": "Builder Task Contract (Doc 07), Gate Types (Doc 08 §5)",
+      "file": "orchestration/review_engine.py",
+      "implements": "NEW: ReviewEngine (3-stage review pipeline orchestrator — review_task, review_all, run_architect_review), Stage 1 automated checks (check_manifest_completeness, check_scope_compliance, check_test_coverage, check_constraint_presence, check_incomplete_items, run_automated_checks), Stage 3 integration checks (check_interface_matching, check_dependency_satisfaction, check_duplicate_artifacts, run_integration_check), helpers (_build_review_prompt, _parse_review_response, compose_verdict, save_review_result, load_review_results).",
+      "task_contract_section": "Review Pipeline (Doc 08 §4), Validation Phase",
       "verbs_used": [],
       "constraints_enforced": [
-        "BuilderTaskContract now tracks dependency graph via depends_on field",
-        "parallel_group assigned by topological sort for execution ordering",
-        "TierCostEstimate follows Doc 07 TIER [N] COST ESTIMATE format",
-        "All models serialize via JSONSerializable mixin (to_dict/from_dict)"
-      ]
-    },
-    {
-      "file": "orchestration/decomposer.py",
-      "implements": "NEW: TaskDecomposer — AI-driven decomposition of Architecture Template into Builder Task Contracts. decompose() prompts Architect, parses response into tasks, resolves dependencies, assigns providers, estimates cost. _parse_task_contracts (regex-based TASK [N] parsing), _resolve_dependencies (Kahn's algorithm topological sort with parallel group assignment and cycle detection), _assign_providers (task type → provider tier mapping), _estimate_cost (token-based cost estimation). save_task_contracts/load_task_contracts for task JSON persistence.",
-      "task_contract_section": "Phase 4 Build Decomposition (Doc 07), Provider Strategy (Doc 08 §3)",
-      "verbs_used": [],
-      "constraints_enforced": [
-        "Topological sort via Kahn's algorithm ensures valid execution order",
-        "CyclicDependencyError raised on circular dependencies",
-        "Complex task types (state_schema, flow, constraint, failure_recovery, dependency_cascade) → builder_complex provider",
-        "Simple task types (general, ux_layer) → builder_simple provider",
-        "Tasks stored as JSON in projects/{id}/tasks/{task_id}.json"
+        "Stage 1 hard-gates Stage 2: critical automated failures skip AI review (no wasted tokens)",
+        "Automated checks are pure functions — testable in isolation",
+        "Reviewer gets isolated connector with VALIDATION-phase constitutional context",
+        "Reviewer sees manifest, not raw code (token-efficient)",
+        "Revision loop stateless — ReviewEngine doesn't loop, architect creates gate for human",
+        "Reviewer role from roles.json (anthropic/claude-sonnet-4-5)"
       ]
     },
     {
       "file": "orchestration/architect.py",
-      "implements": "Updated: Added Phase 4 methods — run_build_decomposition (sets BUILD_DECOMPOSITION phase, creates TaskDecomposer, produces gate with cost estimate for human review), process_decomposition_response (handles approve/revise/reject, stores tasks in project.task_queue, saves task JSONs, advances to BUILD_SUPERVISION). Added _load_roles_config helper.",
-      "task_contract_section": "Phase 4 Build Decomposition (Doc 07), Architect Session (Doc 09 Tier 3)",
+      "implements": "Updated: Added run_review_phase() (sets VALIDATION phase, creates ReviewEngine, calls review_all, counts verdicts, creates TIER_COMPLETE or SCOPE_CHANGE gate, appends journal) and process_review_response() (registers accepted artifacts in project.artifacts, populates review_log). New imports: Artifact, ReviewResult, ReviewVerdict.",
+      "task_contract_section": "Phase 6 Validation (Doc 08 §4), Gate creation (Doc 08 §5)",
       "verbs_used": [],
       "constraints_enforced": [
-        "Decomposition gate created for human review before tasks are committed",
-        "Revision path re-prompts Architect and re-parses response",
-        "Tasks stored in project.task_queue and as individual JSON files",
-        "Phase advances: detailed_design → build_decomposition → build_supervision",
-        "Journal entries appended for both decomposition and approval"
+        "SCOPE_CHANGE gate created when any ESCALATE verdict exists",
+        "TIER_COMPLETE gate used for normal review results",
+        "Reviewer connector factory injectable for testing",
+        "Accepted artifacts registered in project.artifacts with lineage",
+        "Journal entry appended after review pipeline completes"
+      ]
+    },
+    {
+      "file": "orchestration/constitution.py",
+      "implements": "Updated: Implemented validate_builder_output() stub with real scope-compliance checks — lightweight string matching for scope_must_not_touch boundaries.",
+      "task_contract_section": "Constitutional validation (Doc 08 §2)",
+      "verbs_used": [],
+      "constraints_enforced": [
+        "Lightweight string matching only — heavy semantic review is Stage 2's job",
+        "Returns {valid: bool, violations: list} for programmatic consumption"
       ]
     },
     {
       "file": "cli/main.py",
-      "implements": "Updated: Extended _run_architect_phase() to handle detailed_design → build_decomposition (auto-triggers decomposition when design is complete), build_decomposition → build_supervision (processes gate response, displays task queue), and build_supervision status display.",
-      "task_contract_section": "CLI commands (Doc 09 Tier 3)",
+      "implements": "Updated: Added cmd_review (runs review pipeline, shows results), review subparser, extended _run_architect_phase for validation phase routing (prompts for review command, processes review gate response), extended build_supervision resolved branch to advance phase to validation.",
+      "task_contract_section": "CLI commands (Doc 09 Tier 5)",
       "verbs_used": [],
       "constraints_enforced": [
-        "detailed_design phase auto-triggers decomposition when no decomp gate exists",
-        "build_decomposition phase processes resolved gate and stores tasks",
-        "build_supervision phase shows task queue status",
-        "Task list displayed with parallel groups and dependency info"
+        "Review command requires build_supervision or validation phase",
+        "Review command requires completed tasks to exist",
+        "Review command blocks if pending gate exists",
+        "Architect command in build_supervision advances to validation after TIER_COMPLETE resolved",
+        "Architect command in validation phase prompts review or processes response"
       ]
     },
     {
-      "file": "tests/test_tier3.py",
-      "implements": "60 tests covering: Parsing (4 tasks, names, types, subsystem, objective, must_build, must_not_touch, test_criteria, interfaces, dependencies none/single/multiple, empty, no tasks, invalid type defaults, rules and constraints), Dependency resolution (linear chain, parallel groups, diamond dependency, no deps, cycle detection, self-cycle, placeholder resolution, empty, unknown deps), Provider assignment (complex/simple/mixed types, no config fallback, failure_recovery, dependency_cascade), Cost estimation (basic, provider mix, cost drivers, all complex, all simple, empty, roundtrip), Task persistence (save/load, creates dir, empty dir, nonexistent dir, new fields in JSON), ArchitectSession Phase 4 (decomposition creates gate, stores pending tasks, approved flow, stores task JSONs, revision flow, cost info in gate, journal entries, unique IDs, build tier), CLI (decomposition trigger, build_supervision status), Models (new fields roundtrip, defaults, BUILD_DECOMPOSITION enum, TierCostEstimate), Integration (full decomposition flow, parallel groups verification).",
+      "file": "tests/test_tier5.py",
+      "implements": "68 tests covering: Automated checks (16: manifest completeness pass/fail/no-id, scope compliance pass/fail/multiple/no-restrictions, test coverage pass/fail/skip, constraint presence pass/soft, incomplete items pass/fail, run_automated_checks all/mixed), Review parsing (6: accept/reject/revise/escalate verdict, no verdict defaults accept, verdict with notes), Integration checks (8: interface matching pass/fail, dependency satisfaction pass/fail, duplicate artifacts none/detected, run_integration_check clean/mixed), Verdict composition (5: all pass, automated fail, architect revise/escalate, integration issues), ReviewEngine (10: review_task accept/reject-skips-ai/revise/integration-issues/saves, review_all multiple/skips-reviewed/empty, uses reviewer role, separate connector), ArchitectSession review phase (8: creates gate, all accepted summary, mixed verdicts, escalation gate, journal entry, saves project, custom factory, process_review_response registers artifacts), Constitution validation (4: clean/violation/multiple/no-restrictions), Review persistence (3: save/load roundtrip, load empty, load nonexistent), CLI (5: review runs, requires completed tasks, architect routing, shows summary, advances to validation), Models (3: ReviewResult roundtrip, CheckResult roundtrip, ReviewVerdict values).",
       "coverage": [
-        "task_parsing_all_fields",
-        "dependency_resolution_topological_sort",
-        "cycle_detection",
-        "parallel_group_assignment",
-        "provider_assignment_by_task_type",
-        "cost_estimation",
-        "task_persistence_save_load",
-        "architect_phase4_decomposition_gate",
-        "architect_phase4_approval_flow",
-        "architect_phase4_revision_flow",
-        "cli_build_decomposition_phase",
-        "model_serialization_new_fields",
-        "full_decomposition_integration"
-      ]
-    },
-    {
-      "file": "config/roles.json",
-      "implements": "Provider routing config per Doc 08 Provider Strategy. Maps roles (architect, builder_complex, builder_simple, reviewer) to providers/models with max_iterations.",
-      "task_contract_section": "Provider Strategy (Doc 08 §3)",
-      "verbs_used": [],
-      "constraints_enforced": [
-        "Architect: Anthropic Claude Sonnet 4.5, max_iterations=1 (design authority, strong reasoning)",
-        "Builder complex: Anthropic Claude Sonnet 4.5, max_iterations=15",
-        "Builder simple: DeepSeek, max_iterations=10 (cost efficiency)",
-        "Reviewer: Anthropic Claude Sonnet 4.5, max_iterations=1"
-      ]
-    },
-    {
-      "file": "orchestration/gate_manager.py",
-      "implements": "GateManager — full gate lifecycle: create_gate, respond_to_gate, build_response_message, list_gates, persistence helpers. (Unchanged from Tier 2.)",
-      "task_contract_section": "Controls (Doc 08 §5), Gate Card Structure (Doc 07)",
-      "verbs_used": [],
-      "constraints_enforced": [
-        "Gate activates → orchestration stops all work (blocked_on set)",
-        "Nothing proceeds until human responds (pending_gate check)",
-        "Gates stored as JSON in projects/{project_id}/gates/{gate_id}.json",
-        "build_response_message produces natural language per Doc 07 response format"
-      ]
-    },
-    {
-      "file": "orchestration/journal.py",
-      "implements": "Architect's Journal — append-only markdown log. (Unchanged from Tier 2.)",
-      "task_contract_section": "Architect's Journal (Doc 07)",
-      "verbs_used": [],
-      "constraints_enforced": [
-        "Append-only (never modify existing entries)",
-        "Persists across sessions, loaded into Architect context on resume"
-      ]
-    },
-    {
-      "file": "tests/test_tier2.py",
-      "implements": "55 tests covering Tier 2 functionality. (Unchanged.)",
-      "coverage": [
-        "journal_format_append_load",
-        "gate_create_respond_list_persist",
-        "gate_response_message_all_types",
-        "architect_session_create_resume",
-        "vision_intake_gate_creation",
-        "system_design_option_parsing",
-        "design_response_template_storage",
-        "session_persistence_roundtrip",
-        "response_parsing_questions_options",
-        "gate_model_serialization",
-        "cli_architect_approve_reject_gates",
-        "full_gate_lifecycle_integration"
+        "automated_checks_manifest_completeness",
+        "automated_checks_scope_compliance",
+        "automated_checks_test_coverage",
+        "automated_checks_constraint_presence",
+        "automated_checks_incomplete_items",
+        "review_parsing_all_verdicts",
+        "integration_checks_interface_matching",
+        "integration_checks_dependency_satisfaction",
+        "integration_checks_duplicate_artifacts",
+        "verdict_composition_all_cases",
+        "review_engine_full_pipeline",
+        "review_engine_stage1_gates_stage2",
+        "review_engine_skips_already_reviewed",
+        "architect_review_phase_gate_creation",
+        "architect_review_phase_escalation",
+        "architect_process_review_response",
+        "constitution_validate_builder_output",
+        "review_persistence_roundtrip",
+        "cli_review_command",
+        "cli_validation_routing",
+        "model_serialization"
       ]
     }
   ],

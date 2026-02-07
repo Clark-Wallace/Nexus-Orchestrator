@@ -246,9 +246,44 @@ async def _run_architect_phase(session, project) -> int:
             return 0
 
     elif phase == "build_supervision":
-        print(f"Phase: {phase} — tasks decomposed and queued.")
-        print(f"  Task queue: {len(project.task_queue)} tasks")
-        return 0
+        # Check for TIER_COMPLETE gate
+        tier_gates = [g for g in project.gates if g.gate_type == GateType.TIER_COMPLETE.value]
+        resolved = [g for g in tier_gates if g.status != GateStatus.PENDING.value]
+
+        if not tier_gates:
+            print(f"Phase: {phase} — tasks decomposed and queued.")
+            print(f"  Task queue: {len(project.task_queue)} tasks")
+            print(f"\nRun 'nexus-orch build --project {project.project_id}' to dispatch builders.")
+            return 0
+        elif resolved:
+            # Advance to validation phase
+            project.current_phase = "validation"
+            project.save(session.projects_dir)
+            print(f"Build tier complete. Advancing to validation phase.")
+            print(f"  Completed tasks: {len(project.completed_tasks)}")
+            print(f"\nRun 'nexus-orch review --project {project.project_id}' to start review pipeline.")
+            return 0
+
+    elif phase == "validation":
+        # Check for review gate
+        from orchestration.models import ReviewVerdict
+        review_gates = [
+            g for g in project.gates
+            if g.gate_type in (GateType.TIER_COMPLETE.value, GateType.SCOPE_CHANGE.value)
+            and g.phase == "validation"
+        ]
+        resolved = [g for g in review_gates if g.status != GateStatus.PENDING.value]
+
+        if not review_gates:
+            print(f"Phase: {phase} — ready for review.")
+            print(f"\nRun 'nexus-orch review --project {project.project_id}' to start review pipeline.")
+            return 0
+        elif resolved:
+            print(f"Phase: {phase} — review complete.")
+            results = await session.process_review_response(resolved[-1])
+            accepted = sum(1 for r in results if r.verdict == ReviewVerdict.ACCEPT.value)
+            print(f"  {accepted}/{len(results)} tasks accepted. Artifacts registered.")
+            return 0
 
     print(f"Phase: {phase} — no architect action available.")
     return 0
@@ -387,6 +422,131 @@ def cmd_gates(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review(args: argparse.Namespace) -> int:
+    """Run the review pipeline on completed builder output."""
+    from orchestration.architect import ArchitectSession, default_connector_factory
+    from orchestration.constitution import ConstitutionEnforcer
+    from orchestration.gate_manager import GateManager
+    from orchestration.models import ReviewVerdict
+
+    projects_dir = Path(args.projects_dir)
+    docs_dir = Path(args.docs_dir)
+
+    try:
+        project = ProjectState.load(args.project, projects_dir)
+    except FileNotFoundError:
+        print(f"Error: Project '{args.project}' not found", file=sys.stderr)
+        return 1
+
+    # Allow review from build_supervision (with resolved TIER_COMPLETE) or validation
+    if project.current_phase not in ("build_supervision", "validation"):
+        print(
+            f"Error: Project is in phase '{project.current_phase}'. "
+            f"Review requires 'build_supervision' (with completed build) or 'validation' phase.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not project.completed_tasks:
+        print("Error: No completed tasks to review.", file=sys.stderr)
+        return 1
+
+    if project.pending_gate:
+        _print_gate_detail(project.pending_gate)
+        print("\nUse 'approve' or 'reject' to respond before continuing.")
+        return 0
+
+    constitution = ConstitutionEnforcer(docs_dir)
+    gate_manager = GateManager(projects_dir)
+    role_config = _load_role_config("architect", str(docs_dir))
+
+    session = ArchitectSession(
+        project=project,
+        projects_dir=projects_dir,
+        constitution=constitution,
+        gate_manager=gate_manager,
+        role_config=role_config,
+    )
+
+    print(f"Running review pipeline on {len(project.completed_tasks)} completed tasks...")
+
+    gate = asyncio.run(session.run_review_phase())
+
+    review_results = getattr(session, "_review_results", [])
+    if review_results:
+        print(f"\nReview Results:")
+        for r in review_results:
+            print(f"  {r.task_id}: {r.verdict.upper()}")
+
+    _print_gate_detail(gate)
+    return 0
+
+
+def cmd_build(args: argparse.Namespace) -> int:
+    """Dispatch builders for all queued tasks."""
+    from orchestration.architect import ArchitectSession, default_connector_factory
+    from orchestration.constitution import ConstitutionEnforcer
+    from orchestration.gate_manager import GateManager
+
+    projects_dir = Path(args.projects_dir)
+    docs_dir = Path(args.docs_dir)
+
+    try:
+        project = ProjectState.load(args.project, projects_dir)
+    except FileNotFoundError:
+        print(f"Error: Project '{args.project}' not found", file=sys.stderr)
+        return 1
+
+    if project.current_phase != "build_supervision":
+        print(
+            f"Error: Project is in phase '{project.current_phase}', "
+            f"not 'build_supervision'. Run architect phases first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if project.pending_gate:
+        _print_gate_detail(project.pending_gate)
+        print("\nUse 'approve' or 'reject' to respond before continuing.")
+        return 0
+
+    if not project.task_queue:
+        print("No tasks in queue to dispatch.")
+        return 0
+
+    constitution = ConstitutionEnforcer(docs_dir)
+    gate_manager = GateManager(projects_dir)
+    role_config = _load_role_config("architect", str(docs_dir))
+
+    session = ArchitectSession(
+        project=project,
+        projects_dir=projects_dir,
+        constitution=constitution,
+        gate_manager=gate_manager,
+        role_config=role_config,
+    )
+
+    print(f"Dispatching {len(project.task_queue)} builder tasks...")
+
+    gate = asyncio.run(session.run_build_supervision())
+
+    build_result = getattr(session, "_build_result", None)
+    if build_result:
+        print(f"\nBuild Results:")
+        print(f"  Completed: {build_result.completed_count}")
+        print(f"  Failed:    {build_result.failed_count}")
+        if build_result.total_input_tokens or build_result.total_output_tokens:
+            print(
+                f"  Tokens:    {build_result.total_input_tokens} in / "
+                f"{build_result.total_output_tokens} out"
+            )
+        if build_result.questions_for_architect:
+            print(f"  Builder questions: {len(build_result.questions_for_architect)}")
+
+    _print_gate_detail(gate)
+    return 0
+
+
 def _print_gate_detail(gate) -> None:
     """Print detailed gate information to stdout."""
     print(f"\n{'=' * 60}")
@@ -480,6 +640,14 @@ def build_parser() -> argparse.ArgumentParser:
     gates_parser = subparsers.add_parser("gates", help="List gates for a project")
     gates_parser.add_argument("--project", required=True, help="Project ID")
 
+    # --- build ---
+    build_parser = subparsers.add_parser("build", help="Dispatch builders for queued tasks")
+    build_parser.add_argument("--project", required=True, help="Project ID")
+
+    # --- review ---
+    review_parser = subparsers.add_parser("review", help="Run review pipeline on builder output")
+    review_parser.add_argument("--project", required=True, help="Project ID")
+
     return parser
 
 
@@ -498,6 +666,8 @@ def main(argv: list[str] | None = None) -> int:
         "approve": cmd_approve,
         "reject": cmd_reject,
         "gates": cmd_gates,
+        "build": cmd_build,
+        "review": cmd_review,
     }
 
     handler = commands.get(args.command)

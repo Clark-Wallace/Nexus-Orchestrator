@@ -601,6 +601,27 @@ class BuilderOutputManifest(JSONSerializable):
 
 
 # ---------------------------------------------------------------------------
+# Build Result — aggregate results from builder dispatch
+# ---------------------------------------------------------------------------
+
+@dataclass
+class BuildResult(JSONSerializable):
+    """Aggregates results across all dispatched tasks in a tier."""
+    manifests: list[dict] = field(default_factory=list)
+    total_cost: float = 0.0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
+    incomplete_items: list[dict] = field(default_factory=list)
+    questions_for_architect: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "BuildResult":
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+# ---------------------------------------------------------------------------
 # Project Health — summary metrics
 # ---------------------------------------------------------------------------
 
