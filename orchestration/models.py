@@ -33,6 +33,7 @@ class GateType(str, Enum):
     VISION_CONFIRMED = "vision_confirmed"
     SYSTEM_DESIGN = "system_design"
     DETAILED_DESIGN = "detailed_design"
+    BUILD_DECOMPOSITION = "build_decomposition"
     TIER_COMPLETE = "tier_complete"
     SCOPE_CHANGE = "scope_change"
     CONSTITUTIONAL_EXCEPTION = "constitutional"
@@ -363,6 +364,8 @@ class BuilderTaskContract(JSONSerializable):
     interfaces_receives: list[str] = field(default_factory=list)
     interfaces_produces: list[str] = field(default_factory=list)
     test_criteria: list[str] = field(default_factory=list)
+    depends_on: list[str] = field(default_factory=list)
+    parallel_group: int = 0
     status: str = TaskStatus.PENDING.value
     assigned_provider: str = ""
     created_at: str = ""
@@ -370,6 +373,26 @@ class BuilderTaskContract(JSONSerializable):
 
     @classmethod
     def from_dict(cls, data: dict) -> "BuilderTaskContract":
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+# ---------------------------------------------------------------------------
+# Tier Cost Estimate — Doc 07
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TierCostEstimate(JSONSerializable):
+    """Cost estimate for a build tier. Doc 07 §TIER [N] COST ESTIMATE."""
+    task_count: int = 0
+    provider_mix: dict[str, int] = field(default_factory=dict)
+    cost_low: float = 0.0
+    cost_mid: float = 0.0
+    cost_high: float = 0.0
+    cost_drivers: list[str] = field(default_factory=list)
+    savings_opportunities: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "TierCostEstimate":
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 

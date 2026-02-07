@@ -27,14 +27,20 @@ from orchestration.journal import (
     journal_path_for_project,
     load_recent_entries,
 )
+from orchestration.decomposer import (
+    TaskDecomposer,
+    save_task_contracts,
+)
 from orchestration.models import (
+    BuilderTaskContract,
     Gate,
     GateOption,
     GateResponse,
     GateType,
     Phase,
+    TierCostEstimate,
 )
-from orchestration.project_state import ProjectState
+from orchestration.project_state import ProjectState, generate_id
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +422,161 @@ class ArchitectSession:
         self.project.save(self.projects_dir)
 
         return content
+
+    # ------------------------------------------------------------------
+    # Phase 4 — Build Decomposition (Doc 07 §Phase 4)
+    # ------------------------------------------------------------------
+
+    async def run_build_decomposition(self) -> Gate:
+        """Decompose the Architecture Template into Builder Task Contracts.
+
+        Process:
+        1. Sets phase to BUILD_DECOMPOSITION
+        2. Runs TaskDecomposer to prompt Architect and parse response
+        3. Creates a gate with decomposition summary and cost estimate
+        4. Saves session and returns gate for human review
+
+        Returns the pending gate for human response.
+        """
+        if not self.connector:
+            self.resume_session()
+
+        self.project.current_phase = Phase.BUILD_DECOMPOSITION.value
+
+        decomposer = TaskDecomposer()
+        roles_config = self._load_roles_config()
+        tasks, cost = await decomposer.decompose(
+            self.connector, self.project, roles_config
+        )
+
+        # Store tasks temporarily on the session for post-gate processing
+        self._pending_tasks = tasks
+        self._pending_cost = cost
+
+        # Build gate summary with cost info
+        task_summaries = []
+        for t in tasks:
+            dep_str = f" (depends on: {', '.join(t.depends_on)})" if t.depends_on else ""
+            task_summaries.append(
+                f"[Group {t.parallel_group}] {t.task_name} ({t.task_type}){dep_str}"
+            )
+
+        summary = (
+            f"Build Decomposition: {cost.task_count} tasks identified.\n"
+            f"Cost estimate: ${cost.cost_low:.2f} - ${cost.cost_high:.2f} "
+            f"(mid: ${cost.cost_mid:.2f})\n"
+            f"Tasks:\n" + "\n".join(f"  - {s}" for s in task_summaries)
+        )
+
+        # Create gate options — one option = the proposed decomposition
+        options = [
+            GateOption(
+                letter="A",
+                name="Approve Decomposition",
+                summary=f"{cost.task_count} tasks across {max(t.parallel_group for t in tasks) + 1 if tasks else 0} parallel groups",
+                is_recommended=True,
+            ),
+        ]
+
+        gate = self.gate_manager.create_gate(
+            project=self.project,
+            gate_type=GateType.BUILD_DECOMPOSITION,
+            summary=summary,
+            architect_raw_response=self.connector.conversation_history[-1].content
+            if self.connector.conversation_history else "",
+            options=options,
+            recommended_option="A",
+        )
+
+        _append_phase_journal(
+            self.project, self.projects_dir,
+            context=f"Decomposed architecture into {cost.task_count} builder tasks.",
+            reasoning=f"Cost estimate: ${cost.cost_low:.2f}-${cost.cost_high:.2f}. "
+            f"Ready for human review before dispatching.",
+        )
+
+        self.save_session()
+        self.project.save(self.projects_dir)
+
+        return gate
+
+    async def process_decomposition_response(
+        self, gate: Gate
+    ) -> list[BuilderTaskContract]:
+        """Process human response to the decomposition gate.
+
+        If approved: stores tasks in project.task_queue, saves task JSONs.
+        If modified: re-prompts Architect, re-parses.
+        Advances phase to BUILD_SUPERVISION.
+
+        Returns final task list.
+        """
+        if not self.connector:
+            self.resume_session()
+
+        response_msg = self.gate_manager.build_response_message(gate)
+
+        # Check response type
+        resp = GateResponse.from_dict(gate.human_response) if gate.human_response else None
+        needs_revision = resp and resp.response_type in (
+            "revise_and_proceed",
+            "choose_with_modifications",
+            "explore_differently",
+        )
+
+        if needs_revision:
+            # Re-prompt the Architect
+            prompt = (
+                f"{response_msg}\n\n"
+                "Revise the task decomposition based on this feedback. "
+                "Use the same TASK [N] format."
+            )
+            response = await self.connector.send_message(prompt)
+            content = response.get("content", "")
+
+            from orchestration.decomposer import (
+                _parse_task_contracts,
+                _resolve_dependencies,
+                _assign_providers,
+                _estimate_cost,
+            )
+            tasks = _parse_task_contracts(content)
+            for task in tasks:
+                task.task_id = generate_id("task")
+                task.build_tier = self.project.current_tier
+            tasks = _resolve_dependencies(tasks)
+            roles_config = self._load_roles_config()
+            tasks = _assign_providers(tasks, roles_config)
+        else:
+            # Approved — use the pending tasks from run_build_decomposition
+            tasks = getattr(self, "_pending_tasks", [])
+            if response_msg:
+                await self.connector.send_message(response_msg)
+
+        # Store tasks
+        self.project.task_queue = tasks
+        save_task_contracts(tasks, self.project.project_id, self.projects_dir)
+
+        self.project.current_phase = Phase.BUILD_SUPERVISION.value
+
+        _append_phase_journal(
+            self.project, self.projects_dir,
+            context=f"Decomposition approved. {len(tasks)} tasks queued for build.",
+            reasoning="Advancing to build supervision phase.",
+        )
+
+        self.save_session()
+        self.project.save(self.projects_dir)
+
+        return tasks
+
+    def _load_roles_config(self) -> dict:
+        """Load roles config from config/roles.json."""
+        config_path = Path("config") / "roles.json"
+        if config_path.exists():
+            import json
+            return json.loads(config_path.read_text(encoding="utf-8"))
+        return {}
 
 
 # ---------------------------------------------------------------------------

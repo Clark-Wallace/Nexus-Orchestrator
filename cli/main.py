@@ -209,8 +209,45 @@ async def _run_architect_phase(session, project) -> int:
             return 0
 
     elif phase == "detailed_design":
-        print(f"Phase: {phase} — Tier 2 architect work complete.")
-        print("Architecture Template has been stored in project state.")
+        # Check if there's already a decomposition gate
+        decomp_gates = [g for g in project.gates if g.gate_type == GateType.BUILD_DECOMPOSITION.value]
+        if not decomp_gates:
+            print("Running Build Decomposition phase...")
+            gate = await session.run_build_decomposition()
+            _print_gate_detail(gate)
+            return 0
+        else:
+            resolved = [g for g in decomp_gates if g.status != GateStatus.PENDING.value]
+            if resolved:
+                print("Processing decomposition response, storing task queue...")
+                tasks = await session.process_decomposition_response(resolved[-1])
+                print(f"\n{len(tasks)} tasks queued for build supervision.")
+                for t in tasks:
+                    dep_str = f" (deps: {', '.join(t.depends_on)})" if t.depends_on else ""
+                    print(f"  [Group {t.parallel_group}] {t.task_name} ({t.task_type}){dep_str}")
+                return 0
+
+    elif phase == "build_decomposition":
+        decomp_gates = [g for g in project.gates if g.gate_type == GateType.BUILD_DECOMPOSITION.value]
+        resolved = [g for g in decomp_gates if g.status != GateStatus.PENDING.value]
+
+        if not decomp_gates:
+            print("Running Build Decomposition phase...")
+            gate = await session.run_build_decomposition()
+            _print_gate_detail(gate)
+            return 0
+        elif resolved:
+            print("Processing decomposition response, storing task queue...")
+            tasks = await session.process_decomposition_response(resolved[-1])
+            print(f"\n{len(tasks)} tasks queued for build supervision.")
+            for t in tasks:
+                dep_str = f" (deps: {', '.join(t.depends_on)})" if t.depends_on else ""
+                print(f"  [Group {t.parallel_group}] {t.task_name} ({t.task_type}){dep_str}")
+            return 0
+
+    elif phase == "build_supervision":
+        print(f"Phase: {phase} — tasks decomposed and queued.")
+        print(f"  Task queue: {len(project.task_queue)} tasks")
         return 0
 
     print(f"Phase: {phase} — no architect action available.")
